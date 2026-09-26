@@ -290,29 +290,46 @@ def extract_name(text, phone):
 
 
 def parse_records(text):
+    lines = text.splitlines()
+    records = []
+    current_name = None
 
-    phones = find_phones(text)
+    category = detect_category(text) or "Boshqa"
 
-    if not phones:
-        return []
+    for line in lines:
+        line = line.strip()
 
-    category = auto_category(text)
+        if not line:
+            continue
 
-    result = []
+        # Umumiy sarlavhalarni nom sifatida olmaslik
+        clean_line = line.strip("🏷📂📞☎️:.- ")
 
-    for phone in phones:
+        if normalize(clean_line) in [
+            "apteka",
+            "aptekalar",
+            "dorixona",
+            "choyxona",
+            "choyxonalar",
+            "malina choy"
+        ]:
+            continue
 
-        result.append({
-            "category": category,
-            "name": extract_name(
-                text,
-                phone
-            ),
-            "phone": phone
-        })
+        phones = find_phones(line)
 
-    return result
+        if phones:
+            for phone in phones:
+                records.append({
+                    "category": category,
+                    "name": current_name or "Nomsiz",
+                    "phone": phone
+                })
+            continue
 
+        # Telefon bo'lmagan qator — yangi nom
+        current_name = clean_line
+
+    return records
 
 # =========================================================
 # ADMIN TEKSHIRISH
