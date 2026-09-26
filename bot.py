@@ -901,13 +901,7 @@ async def handle_message(
             await update.effective_message.reply_text(
                 format_results(rows)
             )
-
-        else:
-
-            await update.effective_message.reply_text(
-                "❌ Bazada ma'lumot topilmadi."
-            )
-
+            
         return
 
     # =====================================================
