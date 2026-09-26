@@ -1,152 +1,175 @@
-import os
-import re
-import sqlite3
-from flask import Flask
-from threading import Thread
-from telegram import Update
-from telegram.ext import Application, MessageHandler, ContextTypes, filters
+  osphones = find_phones(text)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_FILE = "raqamlar.db"
+    if phones and is_advertisement(text):
+        return
 
-app_web = Flask(__name__)
+    # =====================================================
+    # 3. KATEGORIYAGA MA'LUMOT SAQLASH
+    # =====================================================
 
+    category = detect_category(text)
 
-@app_web.route("/")
-def home():
-    return "Telegram bot ishlayapti!"
+    if phones and category:
 
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app_web.run(host="0.0.0.0", port=port)
-
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS data (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            text TEXT,
-            phones TEXT
+        name = extract_name(
+            text,
+            phones[0]
         )
-    """)
-    conn.commit()
-    conn.close()
 
+        for phone in phones:
 
-def find_phones(text):
-    pattern = r'(?:\+998|998)[\s\-()]?\d{2}[\s\-()]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}'
-    numbers = re.findall(pattern, text)
+            save_record(
+                chat_id,
+                category,
+                name,
+                phone,
+                text
+            )
 
-    result = []
-
-    for number in numbers:
-        digits = re.sub(r"\D", "", number)
-
-        if digits.startswith("998") and len(digits) == 12:
-            phone = "+" + digits
-
-            if phone not in result:
-                result.append(phone)
-
-    return result
-
-
-def save_data(chat_id, text, phones):
-    conn = sqlite3.connect(DB_FILE)
-
-    conn.execute(
-        "INSERT INTO data (chat_id, text, phones) VALUES (?, ?, ?)",
-        (chat_id, text, ", ".join(phones))
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def search_data(chat_id, query):
-    conn = sqlite3.connect(DB_FILE)
-
-    rows = conn.execute(
-        "SELECT text, phones FROM data WHERE chat_id = ?",
-        (chat_id,)
-    ).fetchall()
-
-    conn.close()
-
-    words = query.lower().split()
-    results = []
-
-    for text, phones in rows:
-        lower_text = text.lower()
-        score = 0
-
-        for word in words:
-            if len(word) >= 2 and word in lower_text:
-                score += 1
-
-        if score:
-            results.append((score, text, phones))
-
-    results.sort(reverse=True, key=lambda x: x[0])
-
-    return results[:10]
-
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not update.message or not update.message.text:
         return
 
-    if update.message.from_user and update.message.from_user.is_bot:
-        return
-
-    text = update.message.text.strip()
-    chat_id = update.message.chat_id
-
-    phones = find_phones(text)
+    # =====================================================
+    # 4. ODDIY RAQAMLI XABAR
+    # =====================================================
 
     if phones:
-        save_data(chat_id, text, phones)
+
+        name = extract_name(
+            text,
+            phones[0]
+        )
+
+        for phone in phones:
+
+            save_record(
+                chat_id,
+                "Boshqa",
+                name,
+                phone,
+                text
+            )
+
         return
 
-    results = search_data(chat_id, text)
+    # =====================================================
+    # 5. KATEGORIYA SO'RASH
+    # =====================================================
 
-    if not results:
-        return
+    query_normal = normalize(text)
 
-    answer = "🔎 <b>Topilgan raqamlar:</b>\n\n"
-    shown = set()
+    requested_category = None
 
-    for score, service_text, phones_text in results:
+    for category_name in CATEGORY_KEYWORDS:
 
-        for phone in phones_text.split(", "):
+        if normalize(category_name) in query_normal:
 
-            if phone and phone not in shown:
-                shown.add(phone)
+            requested_category = category_name
+            break
 
-                answer += f"📞 <b>{phone}</b>\n"
-                answer += f"📝 {service_text[:150]}\n\n"
+    if requested_category:
 
-    if shown:
+        rows = search_category(
+            chat_id,
+            requested_category
+        )
+
+        if not rows:
+
+            await update.message.reply_text(
+                "🔎 Bu kategoriyada raqam topilmadi."
+            )
+
+            return
+
+        answer = (
+            f"📋 <b>{requested_category}</b>\n\n"
+        )
+
+        shown = set()
+
+        for name, phone in rows:
+
+            key = (
+                name,
+                phone
+            )
+
+            if key in shown:
+                continue
+
+            shown.add(key)
+
+            answer += (
+                f"🏷 <b>{name}</b>\n"
+                f"📞 {phone}\n\n"
+            )
+
         await update.message.reply_text(
             answer,
             parse_mode="HTML"
         )
 
+        return
+
+    # =====================================================
+    # 6. NOM BO'YICHA QIDIRISH
+    # =====================================================
+
+    results = search_name(
+        chat_id,
+        text
+    )
+
+    if results:
+
+        answer = "🔎 <b>Topilgan raqamlar:</b>\n\n"
+
+        shown = set()
+
+        for category, name, phone in results:
+
+            if phone in shown:
+                continue
+
+            shown.add(phone)
+
+            answer += (
+                f"🏷 <b>{name}</b>\n"
+                f"📞 <b>{phone}</b>\n\n"
+            )
+
+        await update.message.reply_text(
+            answer,
+            parse_mode="HTML"
+        )
+
+        return
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
 
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN topilmadi")
+        raise RuntimeError(
+            "BOT_TOKEN topilmadi"
+        )
 
     init_db()
 
-    Thread(target=run_web, daemon=True).start()
+    Thread(
+        target=run_web,
+        daemon=True
+    ).start()
 
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
     application.add_handler(
         MessageHandler(
@@ -155,7 +178,7 @@ def main():
         )
     )
 
-    print("🚀 BOT ISHLADI!")
+    print("🚀 PRO BOT ISHLADI!")
 
     application.run_polling()
 
