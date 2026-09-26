@@ -6,7 +6,7 @@ from threading import Thread
 from telegram import Update
 from telegram.ext import Application, MessageHandler, ContextTypes, filters
 
-BOT_TOKEN = os.getenv("8924239590:AAEoOmMYLyb8nM2rbcYCFqW5dDu0C7ve5HA")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_FILE = "raqamlar.db"
 
 app_web = Flask(__name__)
