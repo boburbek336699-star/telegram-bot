@@ -1,232 +1,87 @@
 import os
 import re
-import sqlite3
 import threading
 from datetime import datetime, timezone
 
+import psycopg2
+from psycopg2 import pool
 from flask import Flask
 from telegram import Update
-from telegram.ext import (
-    Application,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-
-# =========================================================
-# SOZLAMALAR
-# =========================================================
+from telegram.ext import Application, MessageHandler, ContextTypes, filters
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-DB_FILE = "bot_database.db"
-
-# FAQAT SIZNING MAXSUS XIZMAT RAQAMLARINGIZ
 MY_PHONES = [
     "+998979600501",
     "+998911517577",
 ]
 
-# =========================================================
-# MAXSUS XIZMATLAR
-# Bu kategoriyalarda boshqa odamlarning raqami SAQLANMAYDI
-# =========================================================
-
 MY_SERVICES = [
-    # Konditsioner
-    "konditsioner",
-    "konditsaner",
-    "kanditsioner",
-    "kansaner",
-    "konditsioner usta",
-    "кондиционер",
-
-    # Katyol / qozon
-    "katyol",
-    "katel",
-    "kotel",
-    "qozon",
-    "gaz qozon",
-    "vaillant",
-    "vailant",
-    "valiant",
-    "vaylant",
-    "вайлант",
-    "котел",
-    "котёл",
-    "қозон",
-
-    # Santexnika
-    "santexnik",
-    "santexnika",
-    "сантехник",
-    "сантехника",
-
-    # Televizor
-    "televizor",
-    "televizor usta",
-    "телевизор",
-
-    # Perforator
-    "perforator",
-    "perforatorchi",
-    "perfaratorchi",
-    "перфоратор",
-    "перфораторчи",
-
-    # Kir mashina
-    "kir mashina",
-    "kir mashinasi",
-    "kir yuvish mashinasi",
-    "kir yuvish mashina",
-    "kirmashina",
-    "kirmoshina",
-    "kirmashina usta",
-    "kirmoshina usta",
-    "avtomat kir mashina",
-    "avtomat kir yuvish mashinasi",
-    "stiralka",
-    "stiralka usta",
-    "стиралка",
-    "стиралка уста",
-    "стиральная машина",
-    "кир ювиш машинаси",
-    "кир машина",
-    "автомат стиралка",
+    "konditsioner", "konditsaner", "kanditsioner", "кондиционер",
+    "katyol", "katel", "kotel", "qozon", "gaz qozon",
+    "vaillant", "vailant", "valiant", "vaylant", "вайлант",
+    "котел", "котёл", "қозон",
+    "santexnik", "santexnika", "сантехник", "сантехника",
+    "televizor", "televizor usta", "телевизор",
+    "perforator", "perforatorchi", "perfaratorchi", "перфоратор",
+    "kir mashina", "kir mashinasi", "kir yuvish mashinasi",
+    "kirmashina", "kirmoshina", "stiralka",
+    "стиралка", "стиральная машина", "кир ювиш машинаси",
 ]
-
-# =========================================================
-# KATEGORIYALAR
-# =========================================================
 
 CATEGORY_KEYWORDS = {
     "Aptekalar": [
-        "apteka",
-        "aptekalar",
-        "aptekasi",
-        "dorixona",
-        "dori",
-        "dori-darmon",
-        "аптека",
-        "аптек",
-        "дорихона",
+        "apteka", "aptekalar", "aptekasi",
+        "dorixona", "dori", "dori-darmon",
+        "аптека", "аптек", "дорихона"
     ],
-
     "Choyxonalar": [
-        "choyxona",
-        "choyxonasi",
-        "choyxonalar",
-        "malina choy",
-        "choy",
-        "oshxona",
-        "restoran",
-        "kafe",
-        "kabob",
-        "soy choyxona",
+        "choyxona", "choyxonasi", "choyxonalar",
+        "malina choy", "choy", "oshxona",
+        "restoran", "kafe", "kabob"
     ],
-
     "Konditsioner": [
-        "konditsioner",
-        "konditsaner",
-        "kanditsioner",
-        "kansaner",
-        "кондиционер",
+        "konditsioner", "konditsaner",
+        "kanditsioner", "кондиционер"
     ],
-
     "Katyol": [
-        "katyol",
-        "katel",
-        "kotel",
-        "qozon",
-        "gaz qozon",
-        "vaillant",
-        "vailant",
-        "valiant",
-        "vaylant",
-        "вайлант",
-        "котел",
-        "котёл",
-        "қозон",
+        "katyol", "katel", "kotel", "qozon",
+        "gaz qozon", "vaillant", "vailant",
+        "valiant", "vaylant", "вайлант",
+        "котел", "котёл", "қозон"
     ],
-
     "Santexnika": [
-        "santexnik",
-        "santexnika",
-        "сантехник",
-        "сантехника",
+        "santexnik", "santexnika",
+        "сантехник", "сантехника"
     ],
-
     "Televizor": [
-        "televizor",
-        "televizor usta",
-        "телевизор",
+        "televizor", "телевизор"
     ],
-
     "Perforator": [
-        "perforator",
-        "perforatorchi",
-        "perfaratorchi",
-        "перфоратор",
-        "перфораторчи",
+        "perforator", "perforatorchi",
+        "перфоратор", "перфораторчи"
     ],
-
     "Kir mashina": [
-        "kir mashina",
-        "kir mashinasi",
+        "kir mashina", "kir mashinasi",
         "kir yuvish mashinasi",
-        "kirmashina",
-        "kirmoshina",
-        "stiralka",
-        "стиралка",
+        "kirmashina", "kirmoshina",
+        "stiralka", "стиралка",
         "стиральная машина",
-        "кир ювиш машинаси",
-        "кир машина",
+        "кир ювиш машинаси"
     ],
 }
 
-# =========================================================
-# QIDIRUVDA OLIB TASHLANADIGAN SO'ZLAR
-# =========================================================
-
 SEARCH_STOP_WORDS = [
-    "nomeri",
-    "nomer",
-    "raqami",
-    "raqam",
-    "telefon",
-    "telefon raqami",
-    "telefon nomeri",
-    "telefonini",
-    "nomerini",
-    "raqamini",
-    "bormi",
-    "bor",
-    "kerak",
-    "kerakmi",
-    "bering",
-    "ber",
-    "topib ber",
-    "topib bering",
-    "topilsin",
-    "qayerda",
-    "qaysi",
-    "kimda",
-    "kimning",
-    "menga",
-    "menga kerak",
-    "iltimos",
-    "usta",
-    "ustasi",
-    "xizmati",
-    "xizmat",
-    "nomer bormi",
-    "raqam bormi",
-    "telefon bormi",
+    "nomeri", "nomer", "raqami", "raqam",
+    "telefon", "telefon raqami", "telefon nomeri",
+    "telefonini", "nomerini", "raqamini",
+    "bormi", "bor", "kerak", "kerakmi",
+    "bering", "ber", "topib ber", "topib bering",
+    "qayerda", "qaysi", "kimda", "kimning",
+    "menga", "iltimos", "usta", "ustasi",
+    "xizmati", "xizmat"
 ]
-
-# =========================================================
-# TELEFON REGEX
-# =========================================================
 
 PHONE_RE = re.compile(
     r"(?<!\d)"
@@ -239,49 +94,60 @@ PHONE_RE = re.compile(
 # DATABASE
 # =========================================================
 
-db_lock = threading.Lock()
+DB_POOL = None
 
 
-def get_db():
-    conn = sqlite3.connect(
-        DB_FILE,
-        check_same_thread=False
+def init_db():
+    global DB_POOL
+
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL topilmadi!")
+
+    DB_POOL = psycopg2.pool.ThreadedConnectionPool(
+        1,
+        5,
+        DATABASE_URL
     )
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category TEXT NOT NULL,
-            name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            source_text TEXT,
-            chat_id INTEGER,
-            user_id INTEGER,
-            created_at TEXT NOT NULL
-        )
-    """)
+    conn = DB_POOL.getconn()
 
-    conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS unique_record
-        ON records(category, name, phone)
-    """)
+    try:
+        cur = conn.cursor()
 
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_category
-        ON records(category)
-    """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS records (
+                id BIGSERIAL PRIMARY KEY,
+                category TEXT NOT NULL,
+                name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                source_text TEXT,
+                chat_id BIGINT,
+                user_id BIGINT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
 
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_phone
-        ON records(phone)
-    """)
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS unique_record
+            ON records(category, name, phone)
+        """)
 
-    conn.commit()
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_category
+            ON records(category)
+        """)
 
-    return conn
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_phone
+            ON records(phone)
+        """)
 
+        conn.commit()
 
-get_db().close()
+        print("SUPABASE DATABASE ULANDI")
+
+    finally:
+        DB_POOL.putconn(conn)
 
 
 # =========================================================
@@ -320,15 +186,16 @@ def find_phones(text):
     if not text:
         return []
 
-    found = []
+    result = []
 
-    for match in PHONE_RE.findall(text):
-        phone = normalize_phone(match)
+    for phone in PHONE_RE.findall(text):
 
-        if phone not in found:
-            found.append(phone)
+        phone = normalize_phone(phone)
 
-    return found
+        if phone not in result:
+            result.append(phone)
+
+    return result
 
 
 def is_my_phone(phone):
@@ -339,6 +206,7 @@ def is_special_service(text):
     text_n = normalize(text)
 
     for word in MY_SERVICES:
+
         if normalize(word) in text_n:
             return True
 
@@ -348,38 +216,17 @@ def is_special_service(text):
 def detect_category(text):
     text_n = normalize(text)
 
-    # Avval maxsus kategoriyalar
     for category, keywords in CATEGORY_KEYWORDS.items():
 
         for keyword in keywords:
+
             if normalize(keyword) in text_n:
                 return category
 
     return None
 
 
-def clean_search_query(query):
-    text = normalize(query)
-
-    for word in sorted(
-        SEARCH_STOP_WORDS,
-        key=len,
-        reverse=True
-    ):
-        text = text.replace(normalize(word), " ")
-
-    text = re.sub(r"[^\w\s'-]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
-
-
 def auto_category(text):
-    """
-    Agar kategoriya oldindan mavjud bo'lmasa,
-    xabardan avtomatik kategoriya yaratadi.
-    """
-
     category = detect_category(text)
 
     if category:
@@ -388,34 +235,35 @@ def auto_category(text):
     text_n = normalize(text)
 
     for word in SEARCH_STOP_WORDS:
-        text_n = text_n.replace(normalize(word), " ")
+        text_n = text_n.replace(
+            normalize(word),
+            " "
+        )
 
-    phones = find_phones(text)
-
-    for phone in phones:
+    for phone in find_phones(text):
         text_n = text_n.replace(phone, " ")
 
-    text_n = re.sub(r"[^\w\s'-]", " ", text_n)
-    text_n = re.sub(r"\s+", " ", text_n).strip()
+    text_n = re.sub(
+        r"[^\w\s'-]",
+        " ",
+        text_n
+    )
+
+    text_n = re.sub(
+        r"\s+",
+        " ",
+        text_n
+    ).strip()
 
     if not text_n:
         return "Boshqa"
 
-    words = text_n.split()
+    words = text_n.split()[:4]
 
-    # Juda uzun kategoriya bo'lib ketmasligi uchun
-    words = words[:4]
-
-    category = " ".join(words)
-
-    return category.title() if category else "Boshqa"
+    return " ".join(words).title()
 
 
 def extract_name(text, phone):
-    """
-    Telefon raqamidan oldingi / atrofidagi
-    matndan nomni aniqlash.
-    """
 
     clean = text.replace(phone, " ")
 
@@ -425,22 +273,24 @@ def extract_name(text, phone):
         clean
     )
 
-    clean = re.sub(r"\s+", " ", clean).strip()
+    clean = re.sub(
+        r"\s+",
+        " ",
+        clean
+    ).strip()
 
-    # Emoji va belgilarni kamaytirish
-    clean = clean.strip(" -:|•📞☎️")
+    clean = clean.strip(
+        " -:|•📞☎️"
+    )
 
     if not clean:
         return "Nomsiz"
 
-    # Juda uzun xabarni nom sifatida saqlamaslik
-    if len(clean) > 150:
-        clean = clean[:150]
-
-    return clean
+    return clean[:150]
 
 
 def parse_records(text):
+
     phones = find_phones(text)
 
     if not phones:
@@ -448,71 +298,20 @@ def parse_records(text):
 
     category = auto_category(text)
 
-    records = []
+    result = []
 
     for phone in phones:
 
-        name = extract_name(text, phone)
-
-        records.append({
+        result.append({
             "category": category,
-            "name": name,
-            "phone": phone,
+            "name": extract_name(
+                text,
+                phone
+            ),
+            "phone": phone
         })
 
-    return records
-
-
-def save_record(
-    category,
-    name,
-    phone,
-    source_text,
-    chat_id,
-    user_id
-):
-    phone = normalize_phone(phone)
-
-    if is_my_phone(phone):
-        return False
-
-    now = datetime.now(
-        timezone.utc
-    ).isoformat()
-
-    with db_lock:
-
-        conn = get_db()
-
-        cursor = conn.execute("""
-            INSERT OR IGNORE INTO records
-            (
-                category,
-                name,
-                phone,
-                source_text,
-                chat_id,
-                user_id,
-                created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            category,
-            name,
-            phone,
-            source_text,
-            chat_id,
-            user_id,
-            now,
-        ))
-
-        conn.commit()
-
-        inserted = cursor.rowcount == 1
-
-        conn.close()
-
-    return inserted
+    return result
 
 
 # =========================================================
@@ -520,9 +319,6 @@ def save_record(
 # =========================================================
 
 async def is_group_admin(update, context):
-    """
-    Faqat GROUP / SUPERGROUP adminlarini aniqlaydi.
-    """
 
     chat = update.effective_chat
     user = update.effective_user
@@ -532,7 +328,7 @@ async def is_group_admin(update, context):
 
     if chat.type not in (
         "group",
-        "supergroup",
+        "supergroup"
     ):
         return False
 
@@ -545,7 +341,7 @@ async def is_group_admin(update, context):
 
         return member.status in (
             "administrator",
-            "creator",
+            "creator"
         )
 
     except Exception as e:
@@ -559,145 +355,240 @@ async def is_group_admin(update, context):
 
 
 # =========================================================
+# SAQLASH
+# =========================================================
+
+def save_record(
+    category,
+    name,
+    phone,
+    source_text,
+    chat_id,
+    user_id
+):
+
+    if is_my_phone(phone):
+        return False
+
+    conn = DB_POOL.getconn()
+
+    try:
+
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO records
+            (
+                category,
+                name,
+                phone,
+                source_text,
+                chat_id,
+                user_id,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (category, name, phone)
+            DO NOTHING
+        """, (
+            category,
+            name,
+            normalize_phone(phone),
+            source_text,
+            chat_id,
+            user_id,
+            datetime.now(timezone.utc)
+        ))
+
+        inserted = cur.rowcount == 1
+
+        conn.commit()
+
+        return inserted
+
+    finally:
+
+        DB_POOL.putconn(conn)
+
+
+# =========================================================
 # QIDIRUV
 # =========================================================
 
+def clean_search_query(query):
+
+    text = normalize(query)
+
+    for word in sorted(
+        SEARCH_STOP_WORDS,
+        key=len,
+        reverse=True
+    ):
+
+        text = text.replace(
+            normalize(word),
+            " "
+        )
+
+    text = re.sub(
+        r"[^\w\s'-]",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
 def search_category(category):
-    with db_lock:
 
-        conn = get_db()
+    conn = DB_POOL.getconn()
 
-        rows = conn.execute("""
+    try:
+
+        cur = conn.cursor()
+
+        cur.execute("""
             SELECT category, name, phone
             FROM records
-            WHERE lower(category) = lower(?)
+            WHERE LOWER(category) = LOWER(%s)
             ORDER BY name
-        """, (category,)).fetchall()
+            LIMIT 500
+        """, (category,))
 
-        conn.close()
+        return cur.fetchall()
 
-    return rows
+    finally:
+
+        DB_POOL.putconn(conn)
 
 
 def search_records(query):
+
     cleaned = clean_search_query(query)
 
     if not cleaned:
         return []
 
-    words = cleaned.split()
+    conn = DB_POOL.getconn()
 
-    with db_lock:
+    try:
 
-        conn = get_db()
+        cur = conn.cursor()
 
-        # Avval butun ibora bo'yicha
-        like_query = f"%{cleaned}%"
+        like = "%" + cleaned + "%"
 
-        rows = conn.execute("""
+        cur.execute("""
             SELECT category, name, phone
             FROM records
             WHERE
-                lower(category) LIKE lower(?)
-                OR lower(name) LIKE lower(?)
-                OR lower(source_text) LIKE lower(?)
+                LOWER(category) LIKE LOWER(%s)
+                OR LOWER(name) LIKE LOWER(%s)
+                OR LOWER(source_text) LIKE LOWER(%s)
             ORDER BY category, name
             LIMIT 500
         """, (
-            like_query,
-            like_query,
-            like_query,
-        )).fetchall()
+            like,
+            like,
+            like
+        ))
 
-        # Agar topilmasa, alohida so'zlar
-        if not rows:
+        rows = cur.fetchall()
 
-            found_ids = set()
-            result = []
+        if rows:
+            return rows
 
-            for word in words:
+        # Alohida so'zlar bo'yicha
+        result = []
+        seen = set()
 
-                if len(word) < 2:
-                    continue
+        for word in cleaned.split():
 
-                like_word = f"%{word}%"
+            if len(word) < 2:
+                continue
 
-                temp = conn.execute("""
-                    SELECT id, category, name, phone
-                    FROM records
-                    WHERE
-                        lower(category) LIKE lower(?)
-                        OR lower(name) LIKE lower(?)
-                        OR lower(source_text) LIKE lower(?)
-                    ORDER BY category, name
-                    LIMIT 500
-                """, (
-                    like_word,
-                    like_word,
-                    like_word,
-                )).fetchall()
+            like_word = "%" + word + "%"
 
-                for row in temp:
+            cur.execute("""
+                SELECT category, name, phone
+                FROM records
+                WHERE
+                    LOWER(category) LIKE LOWER(%s)
+                    OR LOWER(name) LIKE LOWER(%s)
+                    OR LOWER(source_text) LIKE LOWER(%s)
+                ORDER BY category, name
+                LIMIT 500
+            """, (
+                like_word,
+                like_word,
+                like_word
+            ))
 
-                    if row[0] not in found_ids:
+            for row in cur.fetchall():
 
-                        found_ids.add(row[0])
+                key = (
+                    row[0],
+                    row[1],
+                    row[2]
+                )
 
-                        result.append(
-                            (
-                                row[1],
-                                row[2],
-                                row[3]
-                            )
-                        )
+                if key not in seen:
 
-            rows = result
+                    seen.add(key)
+                    result.append(row)
 
-        conn.close()
+        return result
 
-    return rows
+    finally:
+
+        DB_POOL.putconn(conn)
 
 
 # =========================================================
-# NATIJA YUBORISH
+# NATIJA
 # =========================================================
 
-async def send_long_result(
-    update,
-    lines
-):
+async def send_long_result(update, rows):
 
-    if not lines:
+    if not rows:
         return
 
-    text = "\n".join(lines)
+    lines = []
 
-    # Telegram limitiga yaqinlashtirmaymiz
-    chunk_size = 3500
+    for category, name, phone in rows:
+
+        lines.append(
+            f"📂 {category}\n"
+            f"🏷 {name}\n"
+            f"📞 {phone}"
+        )
+
+    text = "\n\n".join(lines)
 
     while text:
 
-        if len(text) <= chunk_size:
+        if len(text) <= 3500:
 
-            await update.message.reply_text(
-                text
-            )
+            await update.message.reply_text(text)
 
             break
 
         cut = text.rfind(
             "\n",
             0,
-            chunk_size
+            3500
         )
 
         if cut == -1:
-            cut = chunk_size
-
-        part = text[:cut]
+            cut = 3500
 
         await update.message.reply_text(
-            part
+            text[:cut]
         )
 
         text = text[cut:].lstrip()
@@ -712,7 +603,7 @@ async def send_my_services(update):
 
 
 # =========================================================
-# ASOSIY XABAR HANDLER
+# ASOSIY HANDLER
 # =========================================================
 
 async def handle_message(
@@ -725,16 +616,22 @@ async def handle_message(
     if not message:
         return
 
-    # Botlarning xabarlarini qayta ishlamaymiz
-    if message.from_user and message.from_user.is_bot:
+    if (
+        message.from_user
+        and message.from_user.is_bot
+    ):
         return
 
-    text = message.text or message.caption or ""
+    text = (
+        message.text
+        or message.caption
+        or ""
+    )
 
     if not text:
         return
 
-    # Reply qilingan xabar matnini ham qo'shamiz
+    # Reply xabarni ham ko'radi
     if message.reply_to_message:
 
         reply_text = (
@@ -751,31 +648,31 @@ async def handle_message(
                 + text
             )
 
-    # -----------------------------------------------------
-    # ADMINMI?
-    # -----------------------------------------------------
-
-    admin = await is_group_admin(
-        update,
-        context
-    )
+    special = is_special_service(text)
 
     phones = find_phones(text)
 
-    special = is_special_service(text)
-
     # -----------------------------------------------------
-    # 1. MAXSUS XIZMAT QIDIRUVI
+    # MAXSUS XIZMAT
     # -----------------------------------------------------
 
-    if special and not phones:
+    if special:
 
-        await send_my_services(update)
+        # Maxsus xizmatlarda
+        # boshqa raqamlar SAQLANMAYDI.
+
+        if not phones:
+
+            await send_my_services(update)
+
+        else:
+
+            await send_my_services(update)
 
         return
 
     # -----------------------------------------------------
-    # 2. RAQAM YO'Q BO'LSA — QIDIRUV
+    # RAQAM YO'Q → QIDIRUV
     # -----------------------------------------------------
 
     if not phones:
@@ -794,88 +691,47 @@ async def handle_message(
                 text
             )
 
-        # Hech narsa topilmasa
-        # BOT JIM TURADI
         if not rows:
             return
 
-        lines = []
-
-        for category, name, phone in rows:
-
-            lines.append(
-                f"📂 {category}\n"
-                f"🏷 {name}\n"
-                f"📞 {phone}"
-            )
-
         await send_long_result(
             update,
-            lines
+            rows
         )
 
         return
 
     # -----------------------------------------------------
-    # 3. MAXSUS XIZMAT + BOSHQA RAQAM
+    # RAQAM BOR → FAQAT ADMIN
     # -----------------------------------------------------
 
-    if special:
+    admin = await is_group_admin(
+        update,
+        context
+    )
 
-        # Boshqa odamlarning raqamini
-        # MAXSUS XIZMAT sifatida saqlamaymiz.
-
-        # Faqat sizning raqamingiz chiqadi.
-        await send_my_services(update)
-
-        return
-
-    # -----------------------------------------------------
-    # 4. RAQAMLI XABAR
-    # -----------------------------------------------------
-
-    # FAQAT ADMIN RAQAMI SAQLANADI
     if not admin:
 
-        # Oddiy foydalanuvchining raqami
-        # UMUMAN saqlanmaydi.
         return
-
-    # -----------------------------------------------------
-    # 5. ADMIN RAQAMLARINI SAQLASH
-    # -----------------------------------------------------
 
     records = parse_records(text)
 
-    saved_count = 0
-
     for record in records:
 
-        phone = record["phone"]
-
-        # Maxsus xizmat raqamlarini yana
-        # bazaga yozmaymiz.
-        if is_my_phone(phone):
-            continue
-
-        saved = save_record(
+        save_record(
             category=record["category"],
             name=record["name"],
-            phone=phone,
+            phone=record["phone"],
             source_text=text,
             chat_id=update.effective_chat.id,
-            user_id=update.effective_user.id,
+            user_id=update.effective_user.id
         )
 
-        if saved:
-            saved_count += 1
-
-    # ADMIN XABARIGA JAVOB BERMAYMIZ
-    # faqat bazaga saqlaymiz.
+    # Admin xabariga javob bermaydi.
 
 
 # =========================================================
-# FLASK — RENDER UCHUN
+# FLASK
 # =========================================================
 
 app = Flask(__name__)
@@ -883,13 +739,11 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-
     return "Telegram bot ishlayapti."
 
 
 @app.route("/health")
 def health():
-
     return "OK"
 
 
@@ -915,10 +769,17 @@ def run_web():
 def main():
 
     if not BOT_TOKEN:
-
         raise RuntimeError(
             "BOT_TOKEN topilmadi!"
         )
+
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL topilmadi!"
+        )
+
+    # PostgreSQL ulanishi
+    init_db()
 
     # Render health server
     threading.Thread(
@@ -940,7 +801,7 @@ def main():
     )
 
     print(
-        "PRO BOT ISHLADI..."
+        "PRO BOT + SUPABASE ISHLADI..."
     )
 
     application.run_polling(
