@@ -9,7 +9,7 @@ from telegram.ext import Application, MessageHandler, ContextTypes, filters
 BOT_TOKEN = os.getenv("8924239590:AAEoOmMYLyb8nM2rbcYCFqW5dDu0C7ve5HA")
 DB_FILE = "raqamlar.db"
 
-app_web = Flask(name)
+app_web = Flask(__name__)
 
 
 @app_web.route("/")
