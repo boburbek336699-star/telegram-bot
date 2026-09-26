@@ -1,4 +1,4 @@
-  osphones = find_phones(text)
+phones = find_phones(text)
 
     if phones and is_advertisement(text):
         return
