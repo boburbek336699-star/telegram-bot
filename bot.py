@@ -23,7 +23,7 @@ from telegram.ext import (
 load_dotenv(Path(__file__).with_name(".env"), override=True)
 
 BOT_TOKEN = os.getenv("8924239590:AAHxRHY_AOfd7KG8ZvnUKKTyw_ZnoSxiXCs")
-DATABASE_URL = os.getenv("postgresql://postgres.axcvpgkycofmmsbodfvv:GGykq23fSCo3nLVc@aws-0-ap-south-1.pooler.supabase.com:5432/postgres")
+DATABASE_URL = os.getenv("postgresql://postgres.axcvpgkycofmmsbodfvv:bobur336699bek@aws-0-ap-south-1.pooler.supabase.com:5432/postgres")
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
