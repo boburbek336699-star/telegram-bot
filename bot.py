@@ -1,16 +1,15 @@
 import os
 import re
 import logging
-import threading
-from pathlib import Path
-from functools import lru_cache
+import asyncio
+import unicodedata
+from datetime import datetime
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import asyncpg
 from dotenv import load_dotenv
-from flask import Flask
 
 from telegram import Update
+from telegram.constants import ChatType
 from telegram.ext import (
     Application,
     MessageHandler,
@@ -20,900 +19,660 @@ from telegram.ext import (
 
 
 # ==================================================
-# SOZLAMALAR
+# 1. SOZLAMALAR
 # ==================================================
 
-load_dotenv(Path(__file__).with_name(".env"),override=False)
+load_dotenv()
 
-BOT_TOKEN = os.getenv("8924239590:AAHxRHY_AOfd7KG8ZvnUKKTyw_ZnoSxiXCs")
-DATABASE_URL = os.getenv("postgresql://postgres.axcvpgkycofmmsbodfvv:bobur336699bek@aws-0-ap-south-1.pooler.supabase.com:5432/postgres")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
-logger = logging.getLogger(__name__)
+SOURCE_CHAT = os.getenv(
+    "SOURCE_CHAT",
+    "@KERAKLI_RAQAMLAR1"
+).strip()
 
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN topilmadi. Render Environment sozlamasini tekshiring."
-    )
+    raise RuntimeError("BOT_TOKEN .env faylida topilmadi!")
 
 if not DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL topilmadi. Supabase ulanish manzilini tekshiring."
-    )
+    raise RuntimeError("DATABASE_URL .env faylida topilmadi!")
 
 
 # ==================================================
-# MAXSUS XIZMATLAR
-# BU XIZMATLARDA FAQAT O'Z RAQAMLARINGIZ
+# 2. LOG
+# ==================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+log = logging.getLogger("KRP")
+
+
+# ==================================================
+# 3. YASMINA SHOPPING REKLAMASI
+# ==================================================
+
+SHOPPING_BLOCK = """
+━━━━━━━━━━━━━━
+🛍 YASMINA SHOPPING 🛍
+💖 Ayollar uchun ajoyib mahsulotlar!
+
+👉 https://t.me/yasmina_shooooping
+━━━━━━━━━━━━━━
+"""
+
+
+# ==================================================
+# 4. MAXSUS XIZMATLAR
 # ==================================================
 
 MY_NUMBERS = [
-    "+998979600501",
     "+998911517577",
+    "+998979600501",
 ]
 
 SPECIAL_SERVICES = {
     "konditsioner": [
         "konditsioner",
         "konditsaner",
-        "kanditsioner",
-        "kansaner",
+        "kanditsaner",
         "konditsionerchi",
+        "konditsioner usta",
         "кондиционер",
+        "кондиционер уста",
+        "konditsioner tamirlash",
+        "konditsioner tuzatish",
+        "freon",
     ],
-    "kotel": [
+
+    "katyol": [
         "katyol",
-        "katel",
         "kotel",
         "qozon",
         "gaz qozon",
-        "katyol qozon",
         "vaillant",
         "vailant",
-        "valiant",
         "vaylant",
         "вайлант",
-        "катёл",
         "котел",
         "котёл",
-        "қозон",
+        "газовый котел",
+        "katyol usta",
     ],
-    "santexnika": [
+
+    "kir_mashina": [
+        "kirmoshina",
+        "kir moshina",
+        "kir mashina",
+        "kir yuvish mashinasi",
+        "стиральная машина",
+        "стиралка",
+        "kir mashina usta",
+    ],
+
+    "perforator": [
+        "perforator",
+        "perfarator",
+        "perforator usta",
+        "beton teshish",
+        "бетон тешиш",
+    ],
+
+    "santexnik": [
         "santexnik",
         "santexnika",
+        "santehnik",
         "сантехник",
         "сантехника",
+        "truba usta",
+        "suv quvuri",
     ],
+
     "televizor": [
         "televizor",
+        "telivizor",
         "televizor usta",
         "телевизор",
-        "телевизор уста",
-    ],
-    "perforator": [
-        "perforatorchi",
-        "perfaratorchi",
-        "perforator",
-        "перфораторчи",
-        "перфоратор",
-    ],
-    "kir_mashina": [
-        "kirmashina",
-        "kirmoshina",
-        "kir yuvish mashinasi",
-        "kir mashina",
-        "avtomat",
-        "stiralka",
-        "стиралка",
-        "стиральная машина",
-        "кир ювиш машинаси",
+        "tv tamirlash",
     ],
 }
 
-
-SPECIAL_LABELS = {
-    "konditsioner": "Konditsioner ustasi",
-    "kotel": "Katyol / qozon ustasi",
-    "santexnika": "Santexnik",
-    "televizor": "Televizor ustasi",
-    "perforator": "Perforator xizmati",
-    "kir_mashina": "Kir yuvish mashinasi ustasi",
+SPECIAL_TITLES = {
+    "konditsioner": "❄️ KONDITSIONER USTASI",
+    "katyol": "🔥 KATYOL VA GAZ QOZON USTASI",
+    "kir_mashina": "🧺 KIR YUVISH MASHINASI USTASI",
+    "perforator": "🔨 PERFORATOR VA BETON TESHISH",
+    "santexnik": "🔧 SANTEXNIK XIZMATI",
+    "televizor": "📺 TELEVIZOR TA'MIRLASH",
 }
 
 
 # ==================================================
-# KATEGORIYALAR
+# 5. MATNNI NORMAL HOLATGA KELTIRISH
 # ==================================================
 
-CATEGORIES = {
-    "aptekalar": [
-        "apteka",
-        "aptekalar",
-        "аптека",
-        "аптекалар",
-        "dorixona",
-        "dorixonalar",
-    ],
-    "choyxonalar": [
-        "choyxona",
-        "choyxonalar",
-        "чайхона",
-        "чайхоналар",
-    ],
-    "gril": [
-        "gril",
-        "гриль",
-        "грил",
-    ],
-}
+CYRILLIC_MAP = str.maketrans({
+    "а": "a", "б": "b", "в": "v", "г": "g",
+    "д": "d", "е": "e", "ё": "yo", "ж": "j",
+    "з": "z", "и": "i", "й": "y", "к": "k",
+    "л": "l", "м": "m", "н": "n", "о": "o",
+    "п": "p", "р": "r", "с": "s", "т": "t",
+    "у": "u", "ф": "f", "х": "x", "ц": "s",
+    "ч": "ch", "ш": "sh", "щ": "sh",
+    "ъ": "", "ы": "i", "ь": "", "э": "e",
+    "ю": "yu", "я": "ya",
+})
 
 
-# ==================================================
-# HUDUDLAR
-# ==================================================
+def normalize_text(text):
+    text = (text or "").lower()
 
-REGIONS = {
-    "Navoiy": [
-        "navoiy",
-        "navoi",
-        "навоий",
-    ],
-    "Charxiy": [
-        "charxiy",
-        "charhiy",
-        "charxii",
-        "чархий",
-        "чархии",
-    ],
-    "Romanka": [
-        "romanka",
-        "романка",
-    ],
-    "Yangi bozor": [
-        "yangi bozor",
-        "yangibozor",
-        "янги бозор",
-        "янгибозор",
-    ],
-    "Salang": [
-        "salang",
-        "саланг",
-    ],
-    "Chodaklik": [
-        "chodaklik",
-        "чодаклик",
-    ],
-    "Sud": [
-        "sud",
-        "суд",
-    ],
-    "Vokzal": [
-        "vokzal",
-        "vagzal",
-        "вокзал",
-        "вагзал",
-    ],
-    "Ximik": [
-        "ximik",
-        "khimik",
-        "химик",
-    ],
-    "Sorklet": [
-        "sorklet",
-        "сорклет",
-    ],
-    "Kalve": [
-        "kalve",
-        "калве",
-    ],
-    "Baqachorsu": [
-        "baqachorsu",
-        "bakachorsu",
-        "бақачорсу",
-        "бакачорсу",
-    ],
-    "Kosmonavt": [
-        "kosmonavt",
-        "kasmanavt",
-        "kosmanavt",
-        "космонавт",
-        "касманавт",
-    ],
-}
+    text = text.replace("ў", "o")
+    text = text.replace("ғ", "g")
+    text = text.replace("қ", "q")
+    text = text.replace("ҳ", "h")
 
+    text = text.translate(CYRILLIC_MAP)
 
-# ==================================================
-# BRENDLAR
-# ==================================================
-
-BRANDS = {
-    "Artel": ["artel", "артел"],
-    "Midea": ["midea", "мидеа"],
-    "Samsung": ["samsung", "самсунг"],
-    "LG": ["lg", "элджи"],
-    "Gree": ["gree", "гри"],
-    "Avalon": ["avalon", "авалон"],
-    "Vaillant": [
-        "vaillant",
-        "vailant",
-        "valiant",
-        "vaylant",
-        "вайлант",
-    ],
-    "Ariston": ["ariston", "аристон"],
-    "Buderus": ["buderus", "будерус"],
-    "Remexa": ["remexa", "ремекса"],
-    "Airfel": ["airfel", "айрфел"],
-    "Bosch": ["bosch", "бош"],
-}
-
-
-# ==================================================
-# MATNNI NORMALIZATSIYA QILISH
-# ==================================================
-
-def normalize(text):
-    text = (text or "").lower().strip()
-
-    text = text.replace("ё", "е")
-    text = text.replace("ў", "у")
-    text = text.replace("ғ", "г")
-    text = text.replace("қ", "к")
-    text = text.replace("ҳ", "х")
-
-    text = re.sub(r"[^\w\s+]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-
-    return text.strip()
-
-
-def contains_alias(text, alias):
-    text = normalize(text)
-    alias = normalize(alias)
-
-    if not text or not alias:
-        return False
-
-    return bool(
-        re.search(
-            r"(?<!\w)" + re.escape(alias) + r"(?!\w)",
-            text,
-        )
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(
+        char for char in text
+        if not unicodedata.combining(char)
     )
 
+    text = re.sub(r"[^a-z0-9+]+", " ", text)
 
-def find_alias(text, groups):
-    for canonical, aliases in groups.items():
-        for alias in aliases:
-            if contains_alias(text, alias):
-                return canonical
-
-    return None
-
-
-def find_special_service(text):
-    text = normalize(text)
-
-    # Uzunroq nomlar avval tekshiriladi.
-    services = sorted(
-        SPECIAL_SERVICES.items(),
-        key=lambda item: max(
-            len(normalize(alias))
-            for alias in item[1]
-        ),
-        reverse=True,
-    )
-
-    for service, aliases in services:
-        for alias in aliases:
-            if contains_alias(text, alias):
-                return service
-
-    return None
-
-
-def get_region(text):
-    return find_alias(text, REGIONS)
-
-
-def get_brand(text):
-    return find_alias(text, BRANDS)
-
-
-def get_category(text):
-    return find_alias(text, CATEGORIES)
+    return " ".join(text.split())
 
 
 # ==================================================
-# TELEFON RAQAMLARI
+# 6. TELEFON RAQAMLARINI TOPISH
 # ==================================================
 
 PHONE_PATTERN = re.compile(
-    r"(?<!\d)(?:\+?998[\s().-]*)?"
-    r"(?:\d[\s().-]*){9}(?!\d)"
+    r"(?<!\d)"
+    r"(?:\+?998[\s().-]*\d{2}|0\d{2}|\d{2})"
+    r"(?:[\s().-]*\d){7}"
+    r"(?!\d)"
 )
 
 
-def normalize_phone(phone):
-    digits = re.sub(r"\D", "", phone or "")
-
-    if len(digits) == 9:
-        digits = "998" + digits
-
-    if len(digits) == 12 and digits.startswith("998"):
-        return "+" + digits
-
-    return None
-
-
 def extract_phones(text):
-    result = []
+    found = []
 
-    for match in PHONE_PATTERN.findall(text or ""):
-        phone = normalize_phone(match)
+    for match in PHONE_PATTERN.finditer(text or ""):
+        raw = match.group(0)
+        digits = re.sub(r"\D", "", raw)
 
-        if phone and phone not in result:
-            result.append(phone)
+        if digits.startswith("998") and len(digits) == 12:
+            phone = "+" + digits
 
-    return result
+        elif digits.startswith("0") and len(digits) == 10:
+            phone = "+998" + digits[1:]
 
+        elif len(digits) == 9:
+            phone = "+998" + digits
 
-# ==================================================
-# MA'LUMOTLAR BAZASI
-# MAVJUD MA'LUMOTLAR O'CHIRILMAYDI
-# ==================================================
-
-def get_connection():
-    return psycopg2.connect(
-        DATABASE_URL,
-        connect_timeout=15,
-        sslmode="require",
-        application_name="kerakli_raqamlar_pro",
-    )
-
-
-def ensure_database():
-    """
-    Jadval bo'lmasa yaratadi.
-    Jadval mavjud bo'lsa, kerakli ustunlarni qo'shadi.
-    Mavjud yozuvlarni o'chirmaydi.
-    """
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS public.records (
-                    id BIGSERIAL PRIMARY KEY,
-                    category TEXT,
-                    name TEXT,
-                    phone TEXT,
-                    source_text TEXT,
-                    chat_id BIGINT,
-                    user_id BIGINT,
-                    region TEXT,
-                    brand TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-
-            # Eski jadvalda ayrim ustunlar yo'q bo'lsa,
-            # ularni bittalab qo'shamiz.
-
-            columns = {
-                "id": "BIGSERIAL",
-                "category": "TEXT",
-                "name": "TEXT",
-                "phone": "TEXT",
-                "source_text": "TEXT",
-                "chat_id": "BIGINT",
-                "user_id": "BIGINT",
-                "region": "TEXT",
-                "brand": "TEXT",
-                "created_at": "TIMESTAMPTZ DEFAULT NOW()",
-            }
-
-            for column, column_type in columns.items():
-                cur.execute(
-                    f"""
-                    ALTER TABLE public.records
-                    ADD COLUMN IF NOT EXISTS {column} {column_type}
-                    """
-                )
-
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS records_category_idx
-                ON public.records (category)
-            """)
-
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS records_name_idx
-                ON public.records (name)
-            """)
-
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS records_region_idx
-                ON public.records (region)
-            """)
-
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS records_brand_idx
-                ON public.records (brand)
-            """)
-
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS records_phone_idx
-                ON public.records (phone)
-            """)
-
-        conn.commit()
-
-    logger.info("Ma'lumotlar bazasi tekshirildi.")
-
-
-# ==================================================
-# KATALOG XABARLARINI AJRATISH
-# ==================================================
-
-def parse_records(text):
-    if not text:
-        return []
-
-    if "🏷" not in text and "📂" not in text:
-        return []
-
-    lines = text.splitlines()
-
-    current_category = None
-    current_name = None
-    current_phones = []
-
-    records = []
-
-    def save_current():
-        nonlocal current_name, current_phones
-
-        if current_category and current_name and current_phones:
-            records.append({
-                "category": current_category.strip(),
-                "name": current_name.strip(),
-                "phones": list(dict.fromkeys(current_phones)),
-            })
-
-        current_name = None
-        current_phones = []
-
-    for line in lines:
-        line = line.strip()
-
-        if line.startswith("📂"):
-            save_current()
-            current_category = line.replace("📂", "", 1).strip()
+        else:
             continue
 
-        if line.startswith("🏷"):
-            save_current()
-            current_name = line.replace("🏷", "", 1).strip()
-            continue
+        if phone not in found:
+            found.append(phone)
 
-        if line.startswith("📞") and current_name:
-            current_phones.extend(extract_phones(line))
-
-    save_current()
-
-    filtered = []
-
-    for record in records:
-        category_and_name = (
-            record["category"] + " " + record["name"]
-        )
-
-        # Maxsus xizmatlar uchun begona raqam saqlanmaydi.
-        if find_special_service(category_and_name):
-            continue
-
-        valid_phones = [
-            phone
-            for phone in record["phones"]
-            if phone not in MY_NUMBERS
-        ]
-
-        if not valid_phones:
-            continue
-
-        record["phones"] = valid_phones
-        filtered.append(record)
-
-    return filtered
+    return found
 
 
 # ==================================================
-# GURUH ADMINLARINI TEKSHIRISH
+# 7. XIZMAT VA HUDUDNI ANIQLASH
 # ==================================================
 
-async def is_admin(update: Update):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if not chat or not user:
-        return False
-
-    if chat.type not in ("group", "supergroup"):
-        return False
-
-    try:
-        member = await chat.get_member(user.id)
-
-        return member.status in ("administrator", "creator")
-
-    except Exception:
-        logger.exception("Admin holatini tekshirishda xato")
-        return False
-
-
-# ==================================================
-# KATALOG MA'LUMOTLARINI SAQLASH
-# ==================================================
-
-async def save_group_records(update: Update):
-    message = update.effective_message
-
-    if not message or not message.text:
-        return
-
-    if not await is_admin(update):
-        return
-
-    parsed = parse_records(message.text)
-
-    if not parsed:
-        return
-
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-
-                for record in parsed:
-
-                    category = (
-                        get_category(record["category"])
-                        or record["category"].strip()
-                        or "Boshqa"
-                    )
-
-                    # Hudud va brend faqat aniq alias topilsa belgilanadi.
-                    region = get_region(
-                        record["name"] + " " + record["category"]
-                    )
-
-                    brand = get_brand(
-                        record["name"] + " " + record["category"]
-                    )
-
-                    for phone in record["phones"]:
-
-                        cur.execute("""
-                            SELECT id
-                            FROM public.records
-                            WHERE category = %s
-                              AND name = %s
-                              AND phone = %s
-                            LIMIT 1
-                        """, (
-                            category,
-                            record["name"],
-                            phone,
-                        ))
-
-                        if cur.fetchone():
-                            continue
-
-                        cur.execute("""
-                            INSERT INTO public.records (
-                                category,
-                                name,
-                                phone,
-                                source_text,
-                                chat_id,
-                                user_id,
-                                region,
-                                brand
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (
-                            category,
-                            record["name"],
-                            phone,
-                            message.text,
-                            update.effective_chat.id,
-                            update.effective_user.id,
-                            region,
-                            brand,
-                        ))
-
-            conn.commit()
-
-        logger.info("Katalog yozuvlari tekshirildi va saqlandi.")
-
-    except Exception:
-        logger.exception("Ma'lumotni saqlashda xato")
-
-
-# ==================================================
-# MA'LUMOTLARNI OLISH
-# ==================================================
-
-@lru_cache(maxsize=1)
-def get_all_records():
-    with get_connection() as conn:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT
-                    id,
-                    category,
-                    name,
-                    phone,
-                    region,
-                    brand
-                FROM public.records
-                ORDER BY category, name, id
-            """)
-
-            return tuple(dict(row) for row in cur.fetchall())
-
-
-def refresh_records_cache():
-    get_all_records.cache_clear()
-
-
-# ==================================================
-# SO'ROVDAN KERAKSIZ SO'ZLARNI OLIB TASHLASH
-# ==================================================
-
-GENERIC_WORDS = {
-    "raqam",
-    "raqami",
-    "nomer",
-    "nomeri",
-    "telefon",
-    "tel",
-    "kerak",
-    "bormi",
-    "bering",
-    "ber",
-    "topib",
-    "qidir",
-    "qidiruv",
-    "usta",
-    "ustasi",
-    "xizmat",
-    "xizmati",
-    "qayerda",
-    "manzil",
-    "iltimos",
-    "menga",
-    "uchun",
-    "ni",
-    "va",
-    "ham",
+CATEGORY_WORDS = {
+    "apteka": [
+        "apteka", "dorixona", "dorixona raqami",
+        "аптека", "dorilar",
+    ],
+    "shifokor": [
+        "doktor", "doctor", "shifokor",
+        "vrach", "табиб", "врач",
+    ],
+    "usta": [
+        "usta", "ustasi", "tamirlash",
+        "ta'mirlash", "tuzatish", "ремонт",
+    ],
+    "tozalash": [
+        "tozalash", "tozalovchi", "farrosh",
+        "уборка", "уборщица",
+    ],
+    "karcher": [
+        "karcher", "karcher usta",
+        "kercher", "karcher yuvish",
+    ],
+    "gush": [
+        "gush", "gusht", "gush markazi",
+        "go'sht", "gosht",
+    ],
 }
 
 
-def remove_aliases_from_query(query):
-    result = normalize(query)
+LOCATIONS = [
+    "navoiy",
+    "charxiy",
+    "romanka",
+    "yangi bozor",
+    "salang",
+    "salen",
+    "chodaklik",
+    "sud",
+    "vokzal",
+    "ximik",
+    "sorklet",
+    "kalve",
+    "baqachorsu",
+    "kosmonavt",
+    "gishkoprik",
+]
 
-    all_groups = [
-        CATEGORIES,
-        REGIONS,
-        BRANDS,
-        SPECIAL_SERVICES,
+
+def detect_category(text):
+    normalized = normalize_text(text)
+
+    for category, words in CATEGORY_WORDS.items():
+        for word in words:
+            if normalize_text(word) in normalized:
+                return category
+
+    for service, words in SPECIAL_SERVICES.items():
+        for word in words:
+            if normalize_text(word) in normalized:
+                return service
+
+    return "boshqa"
+
+
+def detect_location(text):
+    normalized = normalize_text(text)
+
+    for location in LOCATIONS:
+        if normalize_text(location) in normalized:
+            return location
+
+    return ""
+
+
+def detect_brand(text):
+    normalized = normalize_text(text)
+
+    brands = [
+        "artel", "lg", "samsung", "midea", "bosch",
+        "vaillant", "vailant", "remexa", "remeha",
+        "buderus", "ariston", "airfel", "baymak",
+        "gree", "aux", "chigo", "avalon",
     ]
 
-    aliases = []
+    for brand in brands:
+        if normalize_text(brand) in normalized:
+            return brand
 
-    for group in all_groups:
-        for values in group.values():
-            aliases.extend(values)
+    return ""
 
-    # Uzun aliaslar birinchi olib tashlanadi.
-    aliases.sort(key=lambda value: len(normalize(value)), reverse=True)
 
-    for alias in aliases:
-        alias = normalize(alias)
+def detect_organization(text, phone):
+    """
+    Telefon oldidagi matndan ehtiyotkorlik bilan nom ajratadi.
+    Aniq nom topilmasa, asl matn saqlanadi.
+    """
 
-        result = re.sub(
-            r"(?<!\w)" + re.escape(alias) + r"(?!\w)",
-            " ",
-            result,
+    text_before = (text or "").split(phone)[0].strip()
+
+    text_before = re.sub(
+        r"^[\s📞☎️🏷️📱:;,\-]+",
+        "",
+        text_before,
+    )
+
+    lines = [
+        line.strip()
+        for line in text_before.splitlines()
+        if line.strip()
+    ]
+
+    if lines:
+        candidate = lines[-1]
+
+        if len(candidate) >= 3:
+            return candidate[:200]
+
+    return "Nomi aniqlanmagan"
+
+
+# ==================================================
+# 8. SUPABASE BAZASIGA ULANISH
+# ==================================================
+
+db_pool = None
+
+
+async def init_database():
+    global db_pool
+
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=5,
+        command_timeout=20,
+    )
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS krp_records (
+                id BIGSERIAL PRIMARY KEY,
+                organization TEXT,
+                phone TEXT,
+                category TEXT,
+                location TEXT,
+                brand TEXT,
+                original_text TEXT,
+                source_chat TEXT,
+                source_message_id BIGINT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS
+            krp_records_phone_idx
+            ON krp_records(phone)
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS
+            krp_records_category_idx
+            ON krp_records(category)
+        """)
+
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS
+            krp_records_location_idx
+            ON krp_records(location)
+        """)
+
+    log.info("Supabase bazasiga ulanish muvaffaqiyatli.")
+
+
+# ==================================================
+# 9. GURUH XABARLARINI SAQLASH
+# ==================================================
+
+async def save_source_message(
+    text,
+    chat_id,
+    message_id,
+    chat_title="",
+):
+    phones = extract_phones(text)
+
+    if not phones:
+        log.info(
+            "Manba xabari olindi, lekin raqam topilmadi. "
+            "Xabar ID: %s",
+            message_id,
         )
+        return
 
-    words = [
-        word
-        for word in result.split()
-        if word not in GENERIC_WORDS
-    ]
+    category = detect_category(text)
+    location = detect_location(text)
+    brand = detect_brand(text)
 
-    return " ".join(words).strip()
+    async with db_pool.acquire() as conn:
+        for phone in phones:
+            organization = detect_organization(text, phone)
 
+            # Bir xil xabar qayta kelgan bo'lsa,
+            # ayni yozuvni qayta qo'shmaymiz.
+            exists = await conn.fetchval("""
+                SELECT id
+                FROM krp_records
+                WHERE source_chat = $1
+                  AND source_message_id = $2
+                  AND phone = $3
+                LIMIT 1
+            """, str(chat_id), message_id, phone)
 
-# ==================================================
-# QIDIRUV
-# ==================================================
-
-def search_records(query):
-    query_normalized = normalize(query)
-
-    # Maxsus xizmatlar uchun faqat o'z raqamlarimiz.
-    special_service = find_special_service(query_normalized)
-
-    if special_service:
-        label = SPECIAL_LABELS[special_service]
-
-        return {
-            "title": label,
-            "special": True,
-            "records": [{
-                "category": label,
-                "name": "Boburjon — xizmat",
-                "phones": MY_NUMBERS,
-            }],
-        }
-
-    category = get_category(query_normalized)
-    region = get_region(query_normalized)
-    brand = get_brand(query_normalized)
-
-    remaining = remove_aliases_from_query(query_normalized)
-
-    try:
-        rows = get_all_records()
-    except Exception:
-        logger.exception("Qidiruvda ma'lumotlar bazasi xatosi")
-        return None
-
-    remaining_words = set(remaining.split())
-    matches = []
-
-    for row in rows:
-
-        row_category = normalize(row.get("category"))
-        row_name = normalize(row.get("name"))
-        row_region = normalize(row.get("region"))
-        row_brand = normalize(row.get("brand"))
-
-        full_name = row_name
-
-        # Kategoriya filtri.
-        if category:
-            if row_category != normalize(category):
+            if exists:
                 continue
 
-        # Hudud filtri.
-        if region:
-            if row_region:
-                if row_region != normalize(region):
-                    continue
-            elif not contains_alias(full_name, region):
-                continue
-
-        # Brend filtri.
-        if brand:
-            if row_brand:
-                if row_brand != normalize(brand):
-                    continue
-            elif not contains_alias(full_name, brand):
-                continue
-
-        # Qolgan so'zlar joy nomiga moslashtiriladi.
-        if remaining_words:
-            name_words = set(full_name.split())
-
-            matched_words = remaining_words & name_words
-
-            # So'rov so'zlarining kamida yarmi mos kelishi kerak.
-            required = max(
-                1,
-                (len(remaining_words) + 1) // 2,
+            await conn.execute("""
+                INSERT INTO krp_records (
+                    organization,
+                    phone,
+                    category,
+                    location,
+                    brand,
+                    original_text,
+                    source_chat,
+                    source_message_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8,
+                    NOW(), NOW()
+                )
+            """,
+                organization,
+                phone,
+                category,
+                location,
+                brand,
+                text,
+                str(chat_id),
+                message_id,
             )
 
-            if len(matched_words) < required:
+    log.info(
+        "MANBA XABARI SAQLANDI | chat=%s | message=%s | raqamlar=%s",
+        chat_title or chat_id,
+        message_id,
+        ", ".join(phones),
+    )
+
+
+# ==================================================
+# 10. MAXSUS XIZMATNI TOPISH
+# ==================================================
+
+def find_special(text):
+    normalized = normalize_text(text)
+
+    for service, words in SPECIAL_SERVICES.items():
+        for word in words:
+            normalized_word = normalize_text(word)
+
+            if normalized_word and normalized_word in normalized:
+                return service, {
+                    "title": SPECIAL_TITLES[service]
+                }
+
+    return None, None
+
+
+# ==================================================
+# 11. BAZADAN QIDIRISH
+# ==================================================
+
+async def search_records(query):
+    normalized_query = normalize_text(query)
+
+    if not normalized_query:
+        return []
+
+    query_words = [
+        word for word in normalized_query.split()
+        if len(word) >= 2
+    ]
+
+    if not query_words:
+        return []
+
+    async with db_pool.acquire() as conn:
+        records = await conn.fetch("""
+            SELECT
+                id,
+                organization,
+                phone,
+                category,
+                location,
+                brand,
+                original_text,
+                source_chat,
+                source_message_id
+            FROM krp_records
+            ORDER BY updated_at DESC
+            LIMIT 3000
+        """)
+
+    scored = []
+
+    requested_location = detect_location(query)
+
+    for row in records:
+        searchable = " ".join([
+            str(row["organization"] or ""),
+            str(row["phone"] or ""),
+            str(row["category"] or ""),
+            str(row["location"] or ""),
+            str(row["brand"] or ""),
+            str(row["original_text"] or ""),
+        ])
+
+        normalized_record = normalize_text(searchable)
+
+        # Hudud aniq so'ralgan bo'lsa,
+        # boshqa hudud yozuvlarini chiqarmaymiz.
+        if requested_location:
+            record_location = normalize_text(
+                row["location"] or ""
+            )
+
+            original_location = normalize_text(
+                row["original_text"] or ""
+            )
+
+            if (
+                requested_location not in record_location
+                and requested_location not in original_location
+            ):
                 continue
 
-        matches.append(row)
+        score = 0
 
-    if not matches:
-        return {
-            "title": query,
-            "special": False,
-            "records": [],
-        }
+        for word in query_words:
+            if word in normalized_record:
+                score += 1
 
-    # Bitta joyning raqamlarini bir guruhga yig'amiz.
-    grouped = {}
+        # So'rovdagi muhim so'zlarning hammasi
+        # topilmagan bo'lsa, natijani chiqarishga shoshilmaymiz.
+        if score == 0:
+            continue
 
-    for row in matches:
-        key = (
-            row["category"],
-            row["name"],
-        )
+        if len(query_words) >= 2 and score < 2:
+            continue
 
-        if key not in grouped:
-            grouped[key] = {
-                "category": row["category"],
-                "name": row["name"],
-                "phones": [],
-            }
+        if normalized_query in normalized_record:
+            score += 3
 
+        if row["phone"]:
+            score += 1
+
+        scored.append((score, row))
+
+    scored.sort(
+        key=lambda item: item[0],
+        reverse=True,
+    )
+
+    # Bir tashkilotning takroriy raqamini
+    # bir javobda qayta-qayta ko'rsatmaymiz.
+    results = []
+    seen = set()
+
+    for score, row in scored:
         phone = row["phone"]
 
-        if phone and phone not in grouped[key]["phones"]:
-            grouped[key]["phones"].append(phone)
+        if not phone or phone in seen:
+            continue
 
-    return {
-        "title": category or query,
-        "special": False,
-        "records": list(grouped.values()),
-    }
+        seen.add(phone)
+        results.append(row)
 
-
-# ==================================================
-# NATIJANI MATNGA AYLANTIRISH
-# ==================================================
-
-def format_results(result):
-    if result is None:
-        return (
-            "⚠️ Ma'lumotlar bazasiga ulanishda xato yuz berdi.\n"
-            "Birozdan keyin qayta urinib ko'ring."
-        )
-
-    records = result["records"]
-
-    if not records:
-        return (
-            "❌ Bu so'rov bo'yicha raqam topilmadi.\n\n"
-            "Boshqa nom, hudud yoki brend bilan qidirib ko'ring."
-        )
-
-    output = []
-
-    for record in records:
-        output.append(f"📂 {record['category']}")
-        output.append(f"🏷 {record['name']}")
-
-        for phone in record["phones"]:
-            output.append(f"📞 {phone}")
-
-        output.append("")
-
-    return "\n".join(output).strip()
-
-
-async def reply_in_chunks(message, text):
-    max_length = 3500
-
-    while text:
-        if len(text) <= max_length:
-            await message.reply_text(text)
+        if len(results) >= 10:
             break
 
-        split_at = text.rfind("\n", 0, max_length)
-
-        if split_at <= 0:
-            split_at = max_length
-
-        part = text[:split_at]
-        text = text[split_at:].lstrip("\n")
-
-        await message.reply_text(part)
+    return results
 
 
 # ==================================================
-# XABARLARNI QABUL QILISH
+# 12. JAVOBNI TAYYORLASH
+# ==================================================
+
+def format_results(rows):
+    blocks = []
+
+    for row in rows:
+        organization = (
+            row["organization"] or "Nomi aniqlanmagan"
+        )
+
+        phone = row["phone"] or ""
+
+        category = row["category"] or ""
+        location = row["location"] or ""
+        brand = row["brand"] or ""
+
+        block = (
+            f"🏷 {organization}\n"
+            f"📞 {phone}"
+        )
+
+        if category and category != "boshqa":
+            block += f"\n📂 Xizmat: {category}"
+
+        if location:
+            block += f"\n📍 Hudud: {location}"
+
+        if brand:
+            block += f"\n🏷 Brend: {brand}"
+
+        blocks.append(block)
+
+    if not blocks:
+        return ""
+
+    return (
+        "\n\n━━━━━━━━━━━━━━\n\n".join(blocks)
+        + "\n\n"
+        + SHOPPING_BLOCK
+    )
+
+
+async def send_reply(update, text):
+    message = update.effective_message
+
+    if not message or not text:
+        return
+
+    await message.reply_text(
+        text,
+        disable_web_page_preview=True,
+    )
+
+
+# ==================================================
+# 13. ASOSIY XABAR QABUL QILISH
 # ==================================================
 
 async def handle_message(
@@ -921,107 +680,139 @@ async def handle_message(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     message = update.effective_message
-
-    if not message or not message.text:
-        return
-
     chat = update.effective_chat
-    user = update.effective_user
 
-    if not chat or not user:
+    if not message or not chat:
         return
 
-    if user.is_bot:
+    text = message.text or message.caption or ""
+
+    if not text.strip():
         return
 
-    query = message.text.strip()
-
-    # Katalog shaklidagi xabarni qayta ishlaymiz.
-    if "🏷" in query or "📂" in query:
-
-        if chat.type in ("group", "supergroup"):
-            await save_group_records(update)
-            refresh_records_cache()
-
-        # Katalog xabari qidiruvga yuborilmaydi.
+    if message.from_user and message.from_user.is_bot:
         return
 
-    # Oddiy matnli so'rov.
-    try:
-        result = search_records(query)
-        answer = format_results(result)
+    # Manba guruhdagi xabarlarni saqlash
+    source_username = SOURCE_CHAT.lstrip("@").lower()
+    chat_username = (
+        getattr(chat, "username", None) or ""
+    ).lower()
 
-        await reply_in_chunks(message, answer)
-
-    except Exception:
-        logger.exception("Xabarni qayta ishlashda xato")
-
-        try:
-            await message.reply_text(
-                "⚠️ Xatolik yuz berdi. Qayta urinib ko'ring."
-            )
-        except Exception:
-            logger.exception("Xatolik xabarini yuborib bo'lmadi")
-
-
-# ==================================================
-# RENDER WEB SERVER
-# ==================================================
-
-web_app = Flask(__name__)
-
-
-@web_app.get("/")
-def home():
-    return "Kerakli raqamlar PRO ishlayapti."
-
-
-@web_app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-def run_web():
-    port = int(os.getenv("PORT", "10000"))
-
-    web_app.run(
-        host="0.0.0.0",
-        port=port,
-        use_reloader=False,
-        threaded=True,
+    is_group = chat.type in (
+        ChatType.GROUP,
+        ChatType.SUPERGROUP,
     )
 
+    is_source = (
+        is_group
+        and (
+            (
+                SOURCE_CHAT.startswith("@")
+                and chat_username == source_username
+            )
+            or str(chat.id) == SOURCE_CHAT
+        )
+    )
+
+    if is_source:
+        try:
+            await save_source_message(
+                text=text,
+                chat_id=chat.id,
+                message_id=message.message_id,
+                chat_title=chat.title or "",
+            )
+        except Exception:
+            log.exception(
+                "Manba guruhidagi xabarni saqlashda xato"
+            )
+
+        # Manba guruhida bot qidiruv javobini bermaydi.
+        return
+
+    # Maxsus xizmatlar
+    service, special = find_special(text)
+
+    if service and special:
+        answer = (
+            special["title"]
+            + "\n\n"
+            + "\n".join(
+                f"📞 {number}"
+                for number in MY_NUMBERS
+            )
+            + "\n\n"
+            + "✅ Tez • Sifatli • Ishonchli"
+            + "\n\n"
+            + SHOPPING_BLOCK
+        )
+
+        try:
+            await send_reply(update, answer)
+        except Exception:
+            log.exception("Maxsus xizmat javobida xato")
+
+        return
+
+    # Oddiy qidiruv
+    try:
+        rows = await search_records(text)
+
+        if not rows:
+            log.info(
+                "Raqam topilmadi. Javob yuborilmadi."
+            )
+            return
+
+        answer = format_results(rows)
+
+        if answer:
+            await send_reply(update, answer)
+
+    except Exception:
+        log.exception("Qidiruvda xato")
+        return
+
 
 # ==================================================
-# BOTNI ISHGA TUSHIRISH
+# 14. BOT ISHGA TUSHISHI
 # ==================================================
+
+async def post_init(application):
+    await init_database()
+    log.info("Kerakli Raqamlar PRO ishga tayyor.")
+
+
+async def post_shutdown(application):
+    global db_pool
+
+    if db_pool:
+        await db_pool.close()
+        db_pool = None
+
 
 def main():
-    ensure_database()
-
-    threading.Thread(
-        target=run_web,
-        daemon=True,
-        name="web-server",
-    ).start()
-
     application = (
         Application.builder()
         .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .build()
     )
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT | filters.CAPTION,
             handle_message,
         )
     )
 
-    logger.info("Kerakli raqamlar PRO ishga tushmoqda.")
+    log.info("Bot ishga tushmoqda...")
 
     application.run_polling(
         drop_pending_updates=False,
+        allowed_updates=["message"],
     )
 
 
